@@ -1,0 +1,122 @@
+#!/bin/bash
+#
+# Script to take an SD card image (such as for a
+# Raspberry Pi) with an dos disklabel and two 
+# partitions (boot vfat and rootfs extX), and shrink
+# it so that the rootfs (2nd partition) is as short 
+# as possible plus a small free space allowance.
+#
+# To use this script, provide the image name as
+# the first argument.
+#
+# Requirements (Fedora 17 package):
+# bash      (bash)
+# fdisk     (util-linux)
+# e2fsck    (e2fsprogs)
+# resize2fs (e2fsprogs)
+# kpartx    (kpartx)
+# truncate  (coreutils)
+#
+# Version 1.0                       2013-03-14
+#
+# Authors:
+# Chris Tyler, Seneca College       2013-03-14
+#
+
+# Copyright (C)2013 Chris Tyler, Seneca College, and others
+# (see Authors, above).
+#
+# This program is free software; you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation; either version 2 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program; if not, write to the Free Software
+# Foundation, Inc., 51 Franklin Street, Fifth Floor, Boston,
+# MA 02110-1301 USA
+#
+
+# Desired free space allowance in MB
+FREESPACE=50
+
+# Check number of args
+if [ "$#" -ne 1 ]
+then
+    echo "$0: Usage: $0 imagename" >&2
+    exit 10
+fi
+
+# Image name, from first argument
+IMAGE="$1"
+
+# Make sure the image is a file
+if [ ! -f "$IMAGE" ]
+then
+    echo "$0: '$IMAGE' is not a valid image name." >&2
+    exit 1
+fi
+
+echo "Shrinking $IMAGE to minimum size plus $FREESPACE MB."
+
+# Make a block device out of each partition
+DEVICE="/dev/mapper/$(kpartx -av "$IMAGE" | sed -n "2s/add map \(.*\) (.*/\1/p")"
+
+# Complain if kpartx fails
+if [ "$?" -ne 0 ]
+then
+    echo "$0: '$IMAGE' has a bad partition table." >&2
+    exit 2
+fi
+
+# fsck and minimally resize the partition
+TEMPFILE=$(mktemp)
+e2fsck -fy "$DEVICE" >$TEMPFILE 2>&1
+RESULT=$?
+if [ "$RESULT" -gt 2 ]
+then
+    echo "$0: e2fsck on $DEVICE reported errors ($RESULT):" >&2
+    cat $TEMPFILE
+    exit 3
+fi
+
+NEWBLOCKS=$(resize2fs -M "$DEVICE" 2>&1 | sed -n "s/.* \([0-9]\+\) blocks long.*/\1/p")
+if [ "$NEWBLOCKS" = "" ]
+then
+    echo "$0: error: New block size is null." >&2
+    exit 4
+fi
+
+NEWK=$(expr "$NEWBLOCKS" '*' 4 + 50 '*' 1042)
+
+# Unmake block devices
+kpartx -d "$IMAGE" >/dev/null 2>&1
+
+# Repartition
+echo -e "d\n2\nn\np\n2\n\n+${NEWK}K\nw\n"|fdisk "$IMAGE" >/dev/null 2>&1
+
+# Make a block device out of each partition
+DEVICE="/dev/mapper/$(kpartx -av "$IMAGE" | sed -n "2s/add map \(.*\) (.*/\1/p")"
+
+# Resize the fs to fill the partition
+resize2fs "$DEVICE" >/dev/null 2>&1
+
+# Unmake the block devices
+kpartx -d "$IMAGE" >/dev/null 2>&1
+
+# Get the last block number
+NEWIMAGEBLOCKS=$(fdisk -l "$IMAGE" | sed -n "s/.* \([0-9]\+\) \+\([0-9]\+\) \+83 \+Linux.*/\1/p")
+NEWIMAGEK=$(expr ${NEWIMAGEBLOCKS} '/' 2 + 1)
+
+# Truncate the image
+truncate -s ${NEWIMAGEK}K ${IMAGE}
+
+# Done!
+echo "Image shrink completed."
+exit 0
+
