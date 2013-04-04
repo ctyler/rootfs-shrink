@@ -75,6 +75,7 @@ then
 fi
 
 # fsck and minimally resize the partition
+sleep 3    # give the kpartx stuff time to settle (?!)
 TEMPFILE=$(mktemp)
 e2fsck -fy "$DEVICE" >$TEMPFILE 2>&1
 RESULT=$?
@@ -92,7 +93,7 @@ then
     exit 4
 fi
 
-NEWK=$(expr "$NEWBLOCKS" '*' 4 + 50 '*' 1042)
+NEWK=$(expr '(' "$NEWBLOCKS" '*' 4 + $FREESPACE ')' '*' 1042)
 
 # Unmake block devices
 kpartx -d "$IMAGE" >/dev/null 2>&1
